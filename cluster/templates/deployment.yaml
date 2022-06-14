@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{.Values.appName}}-deployment
+spec:
+  selector:
+    matchLabels:
+      app: rmtcapp
+  replicas: {{.Values.replicas}}
+  template:
+    metadata:
+      labels:
+        app: {{.Values.appName}}
+    spec:
+      containers:
+      - name: {{.Values.appName}}
+        image: {{.Values.image.name}}:{{.Values.image.tag}}
+        ports:
+        - containerPort: 8080

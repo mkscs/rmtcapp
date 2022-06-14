@@ -1,0 +1,173 @@
+# https://gist.github.com/nklmilojevic/4a1de3c3e31d0ea2d4f31cd54211613d
+* Preparing the environment
+I dont really have a homelab with nix machine at hand so I need to improvise. I have a beefy Windows machine "perhaps" capable of running several VMs.
+I think the easiest way would be to have the ability to spin up a linux VM. Multipass should work fine.
+
+#+BEGIN_SRC sh
+choco install multipass
+#+END_SRC
+
+::HINT:: Multipass provisions VMs of a fixed size and you might run into issues if you try to install too much stuff into it. This can be easily rectified by resizing
+the underlying virtual disk. In my case it's HyperV.
+
+#+BEGIN_SRC powershell
+  # This should give us plenty of space to work with!
+  Resize-VHD -Path .\ubuntu-20.04-server-cloudimg-amd64.vhdx -SizeBytes 15000000000
+#+END_SRC
+
+#+BEGIN_SRC powershell
+# useful for mounting local directories into the VM
+multipass mount localdir vmName:/and_mount_point_here
+#+END_SRC
+
+Another step would be to install kubernetes distribution. I decided to go with k3s for no other reason than that I have used it before and it's pretty straight forward.
+
+#+BEGIN_SRC sh
+  # This is to install it
+  curl -sfL https://get.k3s.io | sh -
+  # This is useful later when you want to join another node
+  cat /var/lib/rancher/k3s/server/node-token
+  sudo k3s agent --server https://myserver:6443 --token ${NODE_TOKEN}
+  # This is useful for other tools like helm because we are kubernetes on :6443 and not where they expect it
+  export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+#+END_SRC
+
+* Creating the  Go application
+I am not really creative so lets just create a simple API and publish some of the jobs that are available. 
+I remember this is just as simple as using the great net/http package. Nothing fancy here.
+
+#+BEGIN_SRC go facade.go
+  package api
+
+  type Publisher interface {
+    Public() interface{}
+  }
+  // Take antything in and if it satisfies the Public() contract call it. Otherwise just pass through the object. This is great for just returning the view of our struct.
+  // Else use json tags and a custom MarshalJOSN
+  func Public(i interface{}) interface{} {
+
+    if p, ok := i.(Publisher); ok {
+      return p.Public()
+    }
+
+    return i
+  }
+#+END_SRC
+
+* Creating the image
+The task asks as to build a minimal image to run our application. I remember an alpine linux provides a pretty minimal base for an application. I have used it in the past
+and it works great*(with some caveats). That said a container does not really need an image to run but we might run into troubles...
+Especially if we decide to just go with barebone FROM SCRATCH / or no image application.
+
+#+BEGIN_SRC dockerfile
+FROM alpine:3.16.0 AS build
+RUN apk update
+RUN apk upgrade
+RUN apk add --update go=1.18.3-r0 gcc=11.2.1_git20220219-r2 g++=11.2.1_git20220219-r2
+WORKDIR /app
+COPY . ./
+RUN chmod +x "build.sh"
+RUN "./build.sh"
+
+FROM alpine:3.16.0
+WORKDIR /root/
+COPY --from=build /app/rmtcapp .
+EXPOSE 8080
+CMD ["./rmtcapp"]
+#+END_SRC
+
+This is what's called a multistage build. In order to build an artifict we usually need some prerequisites like compiler etc. 
+However cleaning up after ourselvesis tedious and possibly error prone and therefore we use an image to build our artifact.
+Then we just grab the result from that image and copy into our final product.
+::LINK:: https://docs.docker.com/develop/develop-images/multistage-build/
+
+
+::HINT:: There are few caveats with Go and musl the C lib Alpine uses. Go's net relies on native code and did not work well with static linking on non-glibc systems.  
+
+* Publishing the image
+One could just hook up their github repository into docker hub and get an image out of it.
+However the task wants us to simulate the CI and therefore I am going to pick a CI service.
+I have decided to go with TravisCI for no particular reason other than that I have used it before and working with it is pretty trivial.
+
+# This is where a build will be triggered if a new commit arrives in the repository.
+# I have decided to tag the image with the last commit hash so I can easily track what version of the app is/should be deployed
+::LINK:: https://app.travis-ci.com/github/mkscs/rmtcapp
+
+# And here we will receive the final image.
+::LINK:: https://hub.docker.com/repository/docker/mkscsy/rmtcapp
+
+* Setting up the cluster
+
+
+# Deploy cert-manager
+
+The way this should work is that cert-manager talks to different certificate issuers. Gets a certificate object and places it in a kubernetes secret.
+
+#+BEGIN_SRC sh
+curl -LO https://github.com/jetstack/cert-manager/releases/download/v1.8.0/cert-manager.yaml
+kubectl create ns cert-manager
+kubectl apply --validate=false -f cert-manager.yaml
+#+END_SRC
+
+# Deploy ingress-nginx
+We need an ingress controller to implement the logic of the ingress resource.
+
+#+BEGIN_SRC sh
+kubectl create ns ingress-nginx
+kubectl -n ingress-nginx apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.2.0/deploy/static/provider/cloud/deploy.yaml
+#+END_SRC 
+
+::TODO: Revisit later https://letsencrypt.org/docs/challenge-types/
+
+# Deploy Metallb
+
+We want this as our load balancer for our bare metal kubernetes cluster.
+
+#+BEGIN_SRC sh
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.12.1/manifests/namespace.yaml
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.12.1/manifests/metallb.yaml
+#+END_SRC
+
+#+BEGIN_SRC yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: metallb-system
+  name: config
+data:
+  config: |
+    address-pools:
+    - name: default
+      protocol: layer2
+      addresses:
+      - 192.168.152.124 - 192.168.152.126
+
+# Adress range in my multipass network which metallb can use to assign an IP
+#+END_SRC
+
+# Deploy our application 
+Lets deploy our application. We have numerous resources which will be deployed with this helm command.
+#+BEGIN_SRC sh
+# lets check first if the default values are the ones that we want as they will be used by the templates files
+helm install --dry-run cluster/values.yaml cluster/
+# then install it
+helm install -f cluster/values.yaml cluster/ --generate-name
+#+END_SRC
+
+* Wrapping up
+
+I had quite some fun with this challenge but it also helped me identify some gaps in my knowledge. I had to revisit Kubernetes manuals multiple times and brush up
+on core concepts like resources and so on.
+However at times it was a bit frustrating and felt like building a Rube Goldberg machine. I did not really enjoy fighting with the tooling and public resources.
+For example I spent way too much time fighting Freenom and their non existent error messages on their forms.
+
+Although Kubernetes is about eventual consistency it has been mentioned that we need to orchestrate helm charts so they come up in specific order.
+We might want to use something like Flux.
+::LINK:: https://fluxcd.io/docs/guides/helmreleases/
+
+I have tried to come up with fast and minimum viable solution given the time constraint. 
+There are of course other ways to achieve the same goal but I did not really have the time to do proper evaluation. For instance Caddy
+::LINK: https://github.com/caddyserver
+
+should be pretty capable at dealing with certificates from issuers like Letsencrypt, ZeroSSL etc
+

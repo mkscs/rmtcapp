@@ -1,0 +1,1 @@
+CGO_ENABLED=1 GOOS=linux go build -o rmtcapp -ldflags="-s -w"

@@ -1,0 +1,14 @@
+appName: rmtcapp
+replicas: 3
+commonSecret: cert-secret-store
+
+image:
+  name: mkscsy/rmtcapp
+  tag: 33584b3f20ca891a358007a709560ca7d65f54e1
+
+
+ingress:
+  name: rmtcapp
+  host: rmtchallenge.ga
+  backendServiceName: rmtcapp-svc
+

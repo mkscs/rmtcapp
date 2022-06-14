@@ -1,0 +1,12 @@
+language: generic
+
+services:
+  - docker
+
+after_success:
+  - docker image build -t rmtcapp . 
+  - echo "$DOCKER_HUB_PASS" | docker login -u "$DOCKER_HUB_USER" --password-stdin
+  - docker tag rmtcapp mkscsy/rmtcapp:$TRAVIS_COMMIT
+  - docker push mkscsy/rmtcapp:$TRAVIS_COMMIT 
+
+

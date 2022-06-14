@@ -1,0 +1,12 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{.Values.appName}}
+  namespace: default
+spec:
+  dnsNames:
+    - rmtchallenge.ga
+  secretName: {{.Values.commonSecret}}
+  issuerRef:
+    name: letsencrypt-cluster-issuer
+    kind: ClusterIssuer
