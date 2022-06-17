@@ -8,7 +8,16 @@ RUN chmod +x "build.sh"
 RUN "./build.sh"
 
 FROM alpine:3.16.0
+
 WORKDIR /root/
-COPY --from=build /build/rmtcapp .
+COPY --from=build /build/rmtcapp /app/rmtcapp
+
+RUN addgroup -S rmtcapp \
+  && adduser -S -D -s /sbin/nologin rmtcapp -G rmtcapp \
+  && chown -R rmtcapp:rmtcapp /app/rmtcapp
+
+WORKDIR /app/
+USER rmtcapp
+
 EXPOSE 8080
 CMD ["./rmtcapp"]
